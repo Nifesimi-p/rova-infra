@@ -1,0 +1,27 @@
+replicaCount: 3
+
+ingress:
+  host: "api.rova.com"
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+autoscaling:
+  minReplicas: 3
+  maxReplicas: 20
+
+podDisruptionBudget:
+  minAvailable: 2
+
+resourceQuota:
+  hard:
+    requests.cpu: "4"
+    requests.memory: "4Gi"
+    limits.cpu: "8"
+    limits.memory: "8Gi"
+    pods: "25"
