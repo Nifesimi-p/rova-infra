@@ -42,10 +42,12 @@ jobs:
           terraform plan \
             -var="environment=dev" \
             -no-color \
+            -input=false \
+            -refresh=false \
             -out=tfplan
         env:
           TF_VAR_environment: dev
-
+        
       - name: Upload Plan Artifact
         uses: actions/upload-artifact@v4
         with:
