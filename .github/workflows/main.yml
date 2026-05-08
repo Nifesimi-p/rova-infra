@@ -2,23 +2,27 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
   pull_request:
-    branches:
-      - main
+    branches: [main, develop]
+
+# id-token: write lets GitHub mint an OIDC token AWS STS can verify.
+# contents: read is the minimum needed for checkout. No write permissions
+# anywhere in this pipeline limits blast radius if it is ever compromised.
+permissions:
+  id-token: write
+  contents: read
 
 env:
   TF_VERSION: "1.7.0"
   HELM_VERSION: "3.14.0"
+  AWS_REGION: eu-west-1
   DOCKER_IMAGE: preciousnifesi/rova-microservice
 
 jobs:
   terraform-quality-gate:
     name: Terraform Quality Gate
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -31,8 +35,23 @@ jobs:
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
 
+      # No static credentials anywhere. GitHub mints a short-lived token per run.
+      # AWS verifies it came from this repo and branch before issuing credentials
+      # that expire within the hour. role-session-name ties every CloudTrail
+      # log entry back to the exact pipeline run that made the API call.
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-${{ github.run_id }}
+
       - name: Terraform Init
-        run: terraform init -backend=false
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TFSTATE_LOCK_TABLE }}"
 
       - name: Terraform Validate
         run: terraform validate
@@ -40,11 +59,10 @@ jobs:
       - name: Terraform Plan
         run: |
           terraform plan \
-            -var="environment=dev" \
+            -var-file=environments/dev.tfvars \
             -no-color \
+            -input=false \
             -out=tfplan
-        env:
-          TF_VAR_environment: dev
 
       - name: Upload Plan Artifact
         uses: actions/upload-artifact@v4
@@ -59,7 +77,6 @@ jobs:
     needs: terraform-quality-gate
     outputs:
       image-tag: ${{ steps.meta.outputs.version }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -75,8 +92,12 @@ jobs:
           tags: |
             type=sha,prefix=sha-,format=short
             type=ref,event=branch
+            type=ref,event=pr
 
+      # Token is scoped to push only, not the account password.
+      # If it leaks it can be revoked without affecting the account.
       - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -87,7 +108,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          push: ${{ github.ref == 'refs/heads/main' }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -97,13 +118,12 @@ jobs:
     name: Helm Lint and Dry Run
     runs-on: ubuntu-latest
     needs: docker-build-push
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Helm
-        uses: azure/setup-helm@v3
+        uses: azure/setup-helm@v4
         with:
           version: ${{ env.HELM_VERSION }}
 
@@ -114,7 +134,7 @@ jobs:
             --set image.tag=${{ needs.docker-build-push.outputs.image-tag }} \
             --strict
 
-      - name: Helm Dry Run Dev
+      - name: Helm Dry Run (dev values)
         run: |
           helm install rova-dev ./helm/microservice \
             --dry-run \
@@ -125,36 +145,28 @@ jobs:
             --set image.tag=${{ needs.docker-build-push.outputs.image-tag }} \
             --set ingress.host=api.dev.rova.com
 
-      - name: Helm Dry Run Production
+      - name: Helm Dry Run (production values)
         run: |
           helm install rova-prod ./helm/microservice \
             --dry-run \
             --debug \
             --namespace production \
             --create-namespace \
-            --set image.repository=${{ env.DOCKER_IMAGE }} \
-            --set image.tag=${{ needs.docker-build-push.outputs.image-tag }} \
             -f ./helm/microservice/values-prod.yaml \
-            --set ingress.host=api.rova.com
+            --set image.repository=${{ env.DOCKER_IMAGE }} \
+            --set image.tag=${{ needs.docker-build-push.outputs.image-tag }}
 
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
     needs:
       - terraform-quality-gate
+      - docker-build-push
       - helm-validate
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Awaiting approval
+      - name: Approval gate reached
         run: |
           echo "Production deployment approved."
-          echo "In a live environment this step would:"
-          echo "1. Configure AWS credentials via OIDC"
-          echo "2. Update kubeconfig for EKS cluster"
-          echo "3. Run helm upgrade --install with --atomic --wait"
-          echo "Image that would be deployed: ${{ env.DOCKER_IMAGE }}:${{ needs.docker-build-push.outputs.image-tag }}"
+          echo "Image: ${{ env.DOCKER_IMAGE }}:${{ needs.docker-build-push.outputs.image-tag }}"
