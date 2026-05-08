@@ -61,6 +61,8 @@ AWS STS ──► IAM Role (rova-github-actions)
 
 ---
 
+![Architecture Diagram](./docs/screenshots/architecture.png)
+
 ## Pipeline
 
 Every pull request targeting `develop` or `main` runs through four stages. No code lands on main without passing all three automated checks first. The production deployment job then pauses for manual approval even after the pipeline is green. A broken change would have to pass automated checks AND get human sign-off before reaching production.
