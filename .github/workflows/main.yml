@@ -137,7 +137,7 @@ jobs:
       - name: Helm Dry Run (dev values)
         run: |
           helm install rova-dev ./helm/microservice \
-            --dry-run \
+            --dry-run=client \
             --debug \
             --namespace dev \
             --create-namespace \
@@ -148,14 +148,13 @@ jobs:
       - name: Helm Dry Run (production values)
         run: |
           helm install rova-prod ./helm/microservice \
-            --dry-run \
+            --dry-run=client \
             --debug \
             --namespace production \
             --create-namespace \
             -f ./helm/microservice/values-prod.yaml \
             --set image.repository=${{ env.DOCKER_IMAGE }} \
             --set image.tag=${{ needs.docker-build-push.outputs.image-tag }}
-
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
