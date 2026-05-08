@@ -1,8 +1,7 @@
 image:
-  repository: ""
-  tag: ""
+  repository: preciousnifesi/rova-microservice
+  tag: "dev-local"
   pullPolicy: IfNotPresent
-
 replicaCount: 2
 
 service:
