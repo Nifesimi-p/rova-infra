@@ -20,8 +20,8 @@ env:
   DOCKER_IMAGE: preciousnifesi/rova-microservice
 
 jobs:
-  terraform-quality-gate:
-    name: Terraform Quality Gate
+  terraform-validate-and-plan:
+    name: Terraform Validate and Plan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -71,10 +71,10 @@ jobs:
           path: tfplan
           retention-days: 7
 
-  docker-build-push:
-    name: Docker Build and Push
+  build-and-push-docker-image:
+    name: Build and Push Docker Image
     runs-on: ubuntu-latest
-    needs: terraform-quality-gate
+    needs: terraform-validate-and-plan
     outputs:
       image-tag: ${{ steps.meta.outputs.version }}
     steps:
@@ -114,10 +114,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  helm-validate:
+  helm-lint-and-dry-run:
     name: Helm Lint and Dry Run
     runs-on: ubuntu-latest
-    needs: docker-build-push
+    needs: build-and-push-docker-image
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -131,7 +131,7 @@ jobs:
         run: |
           helm lint ./helm/microservice \
             --set image.repository=${{ env.DOCKER_IMAGE }} \
-            --set image.tag=${{ needs.docker-build-push.outputs.image-tag }} \
+            --set image.tag=${{ needs.build-and-push-docker-image.outputs.image-tag }} \
             --strict
 
       - name: Helm Dry Run (dev values)
@@ -140,7 +140,7 @@ jobs:
             --debug \
             --namespace dev \
             --set image.repository=${{ env.DOCKER_IMAGE }} \
-            --set image.tag=${{ needs.docker-build-push.outputs.image-tag }} \
+            --set image.tag=${{ needs.build-and-push-docker-image.outputs.image-tag }} \
             --set ingress.host=api.dev.rova.com
 
       - name: Helm Dry Run (production values)
@@ -150,18 +150,54 @@ jobs:
             --namespace production \
             -f ./helm/microservice/values-prod.yaml \
             --set image.repository=${{ env.DOCKER_IMAGE }} \
-            --set image.tag=${{ needs.docker-build-push.outputs.image-tag }}
-  deploy-production:
+            --set image.tag=${{ needs.build-and-push-docker-image.outputs.image-tag }}
+
+  deploy-to-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
     needs:
-      - terraform-quality-gate
-      - docker-build-push
-      - helm-validate
+      - terraform-validate-and-plan
+      - build-and-push-docker-image
+      - helm-lint-and-dry-run
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
     steps:
-      - name: Approval gate reached
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-deploy-${{ github.run_id }}
+
+      - name: Terraform Init
         run: |
-          echo "Production deployment approved."
-          echo "Image: ${{ env.DOCKER_IMAGE }}:${{ needs.docker-build-push.outputs.image-tag }}"
+          terraform init \
+            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TFSTATE_LOCK_TABLE }}"
+
+      - name: Terraform Apply
+        # Disabled to prevent unintended infrastructure provisioning.
+        # Remove this condition and the echo in Helm Upgrade to enable
+        # the full production deployment flow.
+        if: ${{ false }}
+        run: |
+          terraform apply \
+            -var-file=environments/prod.tfvars \
+            -auto-approve \
+            -input=false
+
+      - name: Deploy with Helm
+        run: |
+          echo "The following command would run against the production EKS cluster:"
+          echo "helm upgrade --install rova-prod ./helm/microservice \
+            --namespace production \
+            --create-namespace \
+            --atomic \
+            --timeout 5m \
+            -f ./helm/microservice/values-prod.yaml \
+            --set image.repository=${{ env.DOCKER_IMAGE }} \
+            --set image.tag=${{ needs.build-and-push-docker-image.outputs.image-tag }}"
