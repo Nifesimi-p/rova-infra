@@ -7,14 +7,6 @@ terraform {
       version = "~> 5.0"
     }
   }
-
-  backend "s3" {
-    bucket         = "rova-terraform-state"
-    key            = "rova-infra/terraform.tfstate"
-    region         = "eu-west-1"
-    encrypt        = true
-    dynamodb_table = "rova-terraform-locks"
-  }
 }
 
 provider "aws" {
