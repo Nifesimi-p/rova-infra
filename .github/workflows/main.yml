@@ -136,22 +136,18 @@ jobs:
 
       - name: Helm Dry Run (dev values)
         run: |
-          helm install rova-dev ./helm/microservice \
-            --dry-run=client \
+          helm template rova-dev ./helm/microservice \
             --debug \
             --namespace dev \
-            --create-namespace \
             --set image.repository=${{ env.DOCKER_IMAGE }} \
             --set image.tag=${{ needs.docker-build-push.outputs.image-tag }} \
             --set ingress.host=api.dev.rova.com
 
       - name: Helm Dry Run (production values)
         run: |
-          helm install rova-prod ./helm/microservice \
-            --dry-run=client \
+          helm template rova-prod ./helm/microservice \
             --debug \
             --namespace production \
-            --create-namespace \
             -f ./helm/microservice/values-prod.yaml \
             --set image.repository=${{ env.DOCKER_IMAGE }} \
             --set image.tag=${{ needs.docker-build-push.outputs.image-tag }}
